@@ -1,5 +1,7 @@
 ﻿program ElevatorVerification;
 
+// 本番 AUF2 を読み込み、AviUtl2 のコールバックを模擬して設定・映像・音声を検査する。
+
 {$APPTYPE CONSOLE}
 {$RANGECHECKS ON}
 {$OVERFLOWCHECKS ON}
@@ -297,8 +299,8 @@ begin
   F := EvaluateFrame(T, T.PressAt + (T.ArriveAt - T.PressAt) * 0.53);
   Require((FloorLabel(F.FloorIndex) = 'B1') and (F.Direction = 1) and F.ButtonLit, 'travel through basement');
   Require((FloorLabel(EvaluateFrame(T, T.ArriveAt).FloorIndex) = '1F') and
-    (EvaluateFrame(T, T.EndAt).OpenAmount = 0), 'arrival and final door');
-  Require(EvaluateFrame(T, (T.CloseAt + T.EndAt) * 0.5).OpenAmount > 0.49, 'door closing');
+    (EvaluateFrame(T, T.CloseEnd).OpenAmount = 0), 'arrival and final door');
+  Require(EvaluateFrame(T, (T.CloseAt + T.CloseEnd) * 0.5).OpenAmount > 0.49, 'door closing');
   S.Scene := esInside;
   T := MakeSchedule(S);
   Require((T.StartFloor = 0) and (T.TargetFloor = 96), 'interior floor mapping');
@@ -342,6 +344,7 @@ begin
   Preset(esOutside, eeReiwa, ekStandard);
   Track(etOwnFloor, 1);
   Track(etInitialFloor, 5);
+  Track(etDestination, 6);
   Track(etWait, 0.5);
   Track(etTravel, 2.5);
   Track(etOpen, 0.85);
@@ -355,7 +358,11 @@ begin
   Require(Energy(3.62) > 0.1, 'opening motor');
   Require(Energy(5.1) = 0, 'held still');
   Require(Energy(6.0) > 0.1, 'closing motor');
-  Require(Energy(7.0) = 0, 'finished silence');
+  Require(Energy(7.0) > 0.1, 'onward motor after closing');
+  Require(Energy(9.5) = 0, 'finished silence');
+  Track(etDestination, 1);
+  Require(Energy(7.0) = 0, 'no onward motor when staying on the boarding floor');
+  Track(etDestination, 6);
   Track(etVolume, 100);
   FullVolume := Energy(0.5);
   Require(Abs(FullVolume / First - 4) < 0.00001, 'linear volume');
@@ -1090,6 +1097,313 @@ begin
 end;
 
 
+procedure TestNearScenery;
+var
+  B: TBackground;
+  P, OpenSky: TPIXEL_RGBA;
+  NearStrip, Sky: string;
+begin
+  Preset(esCarFront, eeReiwa, ekGlass);
+  Track(etMinFloor, -8);
+  Track(etMaxFloor, 50);
+  Track(etOwnFloor, 1);
+  Track(etDestination, 1);
+  for B := bgResidential to bgScenic do
+  begin
+    Select('背景', Ord(B));
+    DrawFrame(0);
+    SavePreview('20-near-' + IntToStr(Ord(B)));
+  end;
+
+  Select('背景', Ord(bgOffice));
+  Check('手前側の構造物', False);
+  DrawFrame(0);
+  P := PixelAt(360, 345);
+  OpenSky := PixelAt(480, 345);
+  Require(P.B + 12 < OpenSky.B, 'a near office building fills the side of the lower-floor view');
+  Track(etOwnFloor, 32);
+  Track(etDestination, 32);
+  DrawFrame(0);
+  P := PixelAt(360, 300);
+  OpenSky := PixelAt(480, 300);
+  Require(Abs(Integer(P.B) - OpenSky.B) < 18, 'the close building drops below the upper-floor view');
+  Check('手前側の構造物', True);
+  DrawFrame(0);
+  SavePreview('21-near-high');
+
+  Check('手前側の構造物', False);
+  Track(etOwnFloor, 1);
+  Track(etDestination, 8);
+  DrawFrame(29);
+  NearStrip := RegionHash(311, 276, 350, 364);
+  Sky := RegionHash(452, 285, 508, 335);
+  DrawFrame(45);
+  Require(RegionHash(311, 276, 350, 364) <> NearStrip, 'the near ledges and columns move past the window');
+  Require(RegionHash(452, 285, 508, 335) = Sky, 'the distant sky stays visible behind the near motion');
+
+  Track(etOwnFloor, -2);
+  Track(etDestination, -6);
+  DrawFrame(49);
+  NearStrip := RegionHash(310, 294, 342, 428);
+  DrawFrame(70);
+  Require(RegionHash(310, 294, 342, 428) <> NearStrip, 'near supports move in the underground section');
+  Check('手前側の構造物', True);
+  DrawFrame(70);
+  SavePreview('22-near-shaft');
+
+  Select('背景', Ord(bgNone));
+  Check('手前側の構造物', False);
+  DrawFrame(70);
+  Require(AlphaAt(332, 343) = 0, 'no near scenery when the background is disabled');
+  Check('手前側の構造物', True);
+  AssertComposite(70);
+end;
+
+
+procedure TestExteriorApproach;
+var
+  E: TElevatorEra;
+  K: TElevatorKind;
+  ShaftUpper, ShaftLower, Parked, OpaqueDoor: string;
+  function Upper: string;
+  begin
+    Result := RegionHash(272, 235, 290, 286);
+  end;
+  function Lower: string;
+  begin
+    Result := RegionHash(272, 505, 290, 560);
+  end;
+begin
+  Track(etMinFloor, -8);
+  Track(etMaxFloor, 16);
+  Track(etOwnFloor, 5);
+  Check('手前側の構造物', False);
+  for E := Low(TElevatorEra) to High(TElevatorEra) do
+    for K := Low(TElevatorKind) to High(TElevatorKind) do
+    begin
+      Preset(esOutside, E, K);
+      Track(etInitialFloor, 8);
+      DrawFrame(0);
+      ShaftUpper := Upper;
+      ShaftLower := Lower;
+      DrawFrame(40);
+      Require((Upper = ShaftUpper) and (Lower = ShaftLower), 'the shaft is stationary before the car reaches the opening');
+      DrawFrame(72);
+      Require((Upper <> ShaftUpper) and (Lower = ShaftLower), 'a descending car enters from the top');
+      DrawFrame(90);
+      Parked := HashBytes;
+      Track(etInitialFloor, 2);
+      DrawFrame(72);
+      Require((Upper = ShaftUpper) and (Lower <> ShaftLower), 'an ascending car enters from the bottom');
+      DrawFrame(90);
+      Require(HashBytes = Parked, 'the car lands in the same position from either direction');
+      Track(etInitialFloor, 5);
+      DrawFrame(0);
+      Require(HashBytes = Parked, 'a car already on the current floor remains parked');
+    end;
+  Check('手前側の構造物', True);
+
+  Preset(esOutside, eeReiwa, ekStandard);
+  Track(etInitialFloor, 8);
+  DrawFrame(0);
+  OpaqueDoor := RegionHash(440, 235, 520, 560);
+  DrawFrame(72);
+  Require(RegionHash(440, 235, 520, 560) = OpaqueDoor, 'the solid landing door covers the moving car');
+  AssertComposite(72);
+
+  Preset(esOutside, eeReiwa, ekGlass);
+  Track(etInitialFloor, 8);
+  DrawFrame(40);
+  SavePreview('23-approach-shaft');
+  DrawFrame(72);
+  SavePreview('24-approach-descending');
+  Track(etInitialFloor, 2);
+  DrawFrame(72);
+  SavePreview('25-approach-ascending');
+  DrawFrame(134);
+  SavePreview('26-approach-parked');
+end;
+
+procedure TestExteriorOnward;
+const
+  Directions: array[0..1] of Integer = (-1, 1);
+var
+  S: TElevatorSettings;
+  T: TElevatorSchedule;
+  F: TElevatorFrame;
+  E: TElevatorEra;
+  K: TElevatorKind;
+  Direction: Integer;
+  ShaftUpper, ShaftLower, BoardingDisplay, DestinationDisplay, DepartureFrame: string;
+
+  function Upper: string;
+  begin
+    Result := RegionHash(272, 235, 290, 286);
+  end;
+
+  function Lower: string;
+  begin
+    Result := RegionHash(272, 505, 290, 560);
+  end;
+
+  function Display: string;
+  begin
+    Result := RegionHash(450, 103, 510, 123);
+  end;
+
+begin
+  S := PresetSettings(esOutside, eeReiwa, ekGlass);
+  S.Values[etOwnFloor] := 5;
+  S.Values[etInitialFloor] := 8;
+  for Direction in Directions do
+  begin
+    S.Values[etDestination] := 5 + Direction * 3;
+    T := MakeSchedule(S);
+    Require((T.TargetFloor = T.OwnFloor) and (T.OnwardDirection = Direction) and
+      (Abs(T.DestinationAt - T.CloseEnd - S.Values[etTravel]) < 0.00001), 'onward schedule after boarding');
+    F := EvaluateFrame(T, (T.CloseAt + T.CloseEnd) * 0.5);
+    Require(F.Arrived and (F.FloorPosition = T.OwnFloor) and (F.Direction = 0) and
+      (F.OpenAmount > 0.49), 'the car stays level until the doors close');
+    F := EvaluateFrame(T, T.CloseEnd);
+    Require((F.FloorPosition = T.OwnFloor) and (F.Direction = Direction) and
+      (F.OpenAmount = 0) and not F.ButtonLit, 'onward travel starts with closed doors');
+    F := EvaluateFrame(T, (T.CloseEnd + T.DestinationAt) * 0.5);
+    Require((F.FloorIndex = T.OwnFloor + Direction) and (F.Direction = Direction) and
+      not F.Arrived and (F.OpenAmount = 0), 'floor display and direction advance during onward travel');
+    F := EvaluateFrame(T, T.DestinationAt);
+    Require(F.Arrived and (F.FloorIndex = T.Destination) and (F.FloorPosition = T.Destination) and
+      (F.Direction = 0) and (F.OpenAmount = 0), 'destination displayed while boarding doors stay shut');
+  end;
+  S.Values[etDestination] := 5;
+  T := MakeSchedule(S);
+  F := EvaluateFrame(T, T.CloseEnd + 1);
+  Require((T.DestinationAt = T.CloseEnd) and (F.FloorPosition = T.OwnFloor) and
+    (F.Direction = 0), 'same-floor destination leaves the car parked');
+  S.Values[etDestination] := 8;
+  S.Values[etTravel] := 0;
+  T := MakeSchedule(S);
+  F := EvaluateFrame(T, T.CloseEnd);
+  Require((T.DestinationAt = T.CloseEnd) and (F.FloorPosition = T.Destination) and
+    (F.Direction = 0) and (F.OpenAmount = 0), 'zero-duration onward movement is instantaneous');
+
+  Track(etOwnFloor, 5);
+  Track(etInitialFloor, 8);
+  Track(etWait, 0.5);
+  Track(etTravel, 2.5);
+  Track(etArrivalWait, 0);
+  Track(etOpen, 0.85);
+  Track(etHold, 2);
+  Track(etClose, 0.9);
+  Check('手前側の構造物', False);
+  for E := Low(TElevatorEra) to High(TElevatorEra) do
+    for K := Low(TElevatorKind) to High(TElevatorKind) do
+    begin
+      Preset(esOutside, E, K);
+      Track(etDestination, 8);
+      DrawFrame(0);
+      ShaftUpper := Upper;
+      ShaftLower := Lower;
+      DrawFrame(203);
+      Require((Upper <> ShaftUpper) and (Lower <> ShaftLower), 'the closed car still fills the opening at departure');
+      DrawFrame(226);
+      Require((Upper <> ShaftUpper) and (Lower = ShaftLower), 'an ascending car leaves through the top');
+      DrawFrame(279);
+      Require((Upper = ShaftUpper) and (Lower = ShaftLower), 'the shaft stays visible after onward arrival');
+      Track(etDestination, 2);
+      DrawFrame(226);
+      Require((Upper = ShaftUpper) and (Lower <> ShaftLower), 'a descending car leaves through the bottom');
+    end;
+  Check('手前側の構造物', True);
+
+  Preset(esOutside, eeReiwa, ekGlass);
+  Track(etDestination, 8);
+  DrawFrame(200);
+  BoardingDisplay := Display;
+  SavePreview('27-onward-closing');
+  DrawFrame(226);
+  DepartureFrame := HashBytes;
+  SavePreview('28-onward-ascending');
+  DrawFrame(248);
+  Require(Display <> BoardingDisplay, 'the landing display updates after departure');
+  DrawFrame(279);
+  DestinationDisplay := Display;
+  SavePreview('29-onward-destination');
+  DrawFrame(315);
+  Require((Display = DestinationDisplay) and (Display <> BoardingDisplay), 'the landing display holds the destination');
+  DrawFrame(226);
+  Require(HashBytes = DepartureFrame, 'onward travel can be sought independently of earlier frames');
+  Track(etDestination, 2);
+  DrawFrame(226);
+  SavePreview('30-onward-descending');
+end;
+
+procedure TestExteriorLandingBackground;
+var
+  Background: TBackground;
+  Landing: string;
+
+  function Landscape: string;
+  begin
+    // かごが動いても照明や手すりに隠れない範囲で、背後の風景そのものを比較する。
+    Result := RegionHash(390, 362, 555, 375);
+  end;
+
+begin
+  Preset(esOutside, eeReiwa, ekGlass);
+  Track(etOwnFloor, 5);
+  Check('手前側の構造物', False);
+  for Background := bgResidential to bgScenic do
+  begin
+    Select('背景', Ord(Background));
+    Track(etInitialFloor, 8);
+    Track(etDestination, 8);
+    DrawFrame(0);
+    Landing := Landscape;
+    DrawFrame(80);
+    Require(Landscape = Landing, 'descending approach reveals the fixed landing background');
+    DrawFrame(134);
+    Require(Landscape = Landing, 'the parked car shows the same landing background');
+    DrawFrame(210);
+    Require(Landscape = Landing, 'upward departure leaves the background in place');
+    DrawFrame(279);
+    Require(Landscape = Landing, 'the destination does not replace the landing background');
+
+    Track(etInitialFloor, 2);
+    Track(etDestination, 2);
+    DrawFrame(80);
+    Require(Landscape = Landing, 'ascending approach reveals the same background');
+    DrawFrame(210);
+    Require(Landscape = Landing, 'downward departure leaves the background in place');
+    DrawFrame(279);
+    Require(Landscape = Landing, 'arriving below the landing keeps its background');
+  end;
+  DrawFrame(0);
+  Landing := RegionHash(300, 180, 660, 600);
+  Track(etOwnFloor, 14);
+  DrawFrame(0);
+  Require(RegionHash(300, 180, 660, 600) <> Landing, 'the configured landing floor sets the viewpoint');
+  Track(etOwnFloor, 5);
+  Select('背景', Ord(bgNone));
+  DrawFrame(0);
+  Require(AlphaAt(480, 350) = 0, 'an empty landing is transparent with no background');
+  DrawFrame(134);
+  Require(AlphaAt(480, 350) = 0, 'the rear glass stays transparent with no background');
+  Check('手前側の構造物', True);
+
+  Select('背景', Ord(bgScenic));
+  Track(etInitialFloor, 8);
+  Track(etDestination, 8);
+  DrawFrame(80);
+  SavePreview('31-fixed-background-approach');
+  DrawFrame(203);
+  SavePreview('32-fixed-background-boarding');
+  DrawFrame(210);
+  SavePreview('33-fixed-background-departure');
+  DrawFrame(279);
+  SavePreview('34-fixed-background-away');
+end;
+
+
 procedure Run;
 var
   Required: TRequired;
@@ -1136,6 +1450,10 @@ begin
       TestDoorCenter;
       TestCarFrontScenery;
       TestGroundTransition;
+      TestNearScenery;
+      TestExteriorApproach;
+      TestExteriorOnward;
+      TestExteriorLandingBackground;
     finally
       Table^.Func_Destroy(1, Video.UserData);
       Uninitialize();

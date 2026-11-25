@@ -8,7 +8,8 @@ interface
 
 uses AviUtl2FilterTypes, Elevator_Settings;
 
-// ホストにチャンネル別の float32 PCM を渡す。サンプルバッファは呼び出し中のみ有効。
+// ホストから借りたオブジェクト情報をもとに、要求された区間の float32 PCM をチャンネル別に渡す。
+// サンプル配列はホストへの通知中に有効。無音設定ではゼロを渡し、無効な出力サイズでは False を返す。
 function RenderElevatorAudio(Audio: PFILTER_PROC_AUDIO; const S: TElevatorSettings): Boolean;
 
 implementation
@@ -82,7 +83,9 @@ begin
 
   Age := Seconds - Schedule.OpenAt;
   Value := Value + 0.18 * Motor(Age, Schedule.OpenEnd - Schedule.OpenAt, MotorPitch * 1.79);
-  Value := Value + DoorClosingSound(Seconds, Schedule.CloseAt, Schedule.EndAt, MotorPitch);
+  Value := Value + DoorClosingSound(Seconds, Schedule.CloseAt, Schedule.CloseEnd, MotorPitch);
+  // 外側で乗り場から離れる駆動音も、映像と同じ閉扉完了時刻を起点にする。
+  Value := Value + 0.21 * Motor(Seconds - Schedule.CloseEnd, Schedule.DestinationAt - Schedule.CloseEnd, MotorPitch);
   Result := EnsureRange(Value * Gain, -1.0, 1.0);
 end;
 

@@ -2,7 +2,7 @@
 
 // Copyright (c) 2026 VRAMの魔術師
 // SPDX-License-Identifier: GPL-3.0-only
-// 0階を含まない階数と、オブジェクトの経過秒から決まる動作時刻を管理する。
+// 階数を0階のない連続インデックスへ変換し、映像と効果音で共用する動作時刻を求める。
 
 interface
 
@@ -11,16 +11,18 @@ uses Elevator_Settings;
 type
   TElevatorSchedule = record
     FirstFloor, LastFloor, OwnFloor, Destination: Integer; // 連続階インデックス
-    StartFloor, TargetFloor, Direction, CallDirection: Integer;
+    // 外側の TargetFloor は最初に到着する乗り場を指す。目的階への移動は閉扉後に始まる。
+    StartFloor, TargetFloor, Direction, CallDirection, OnwardDirection: Integer;
     StartsOpen: Boolean;
-    // オブジェクト内の秒。戸が閉じた時刻と発進、到着と開扉を独立させる。
-    PressAt, EntryClosedAt, DepartAt, ArriveAt, OpenAt, OpenEnd, CloseAt, EndAt: Double;
+    // オブジェクト先頭からの秒。外側の DestinationAt は閉扉後の移動が終わる時刻。
+    // 移動区間が無い場合は CloseEnd と同じ値を使い、効果音の長さを0秒にする。
+    PressAt, EntryClosedAt, DepartAt, ArriveAt, OpenAt, OpenEnd, CloseAt, CloseEnd, DestinationAt: Double;
   end;
 
   TElevatorFrame = record
     FloorIndex, Direction: Integer;
-    FloorPosition: Double;
-    OpenAmount: Single;
+    FloorPosition: Double; // 階と階の間を表せる連続階位置。計器表示には FloorIndex を使う。
+    OpenAmount: Single;   // 扉の開き具合。0 が全閉、1 が全開。
     ButtonLit, Arrived: Boolean;
   end;
 
@@ -30,12 +32,17 @@ type
     Offset: Single; // 窓の高さを1とした、上下の移動量
   end;
 
+// 設定の階数を建物の範囲に収め、場面に合わせた映像・音声用の時刻を返す。
 function MakeSchedule(const S: TElevatorSettings): TElevatorSchedule;
+// オブジェクト内の経過秒から座標と表示状態を求める。シーク時も同じ時刻なら同じ状態を返す。
 function EvaluateFrame(const S: TElevatorSchedule; Seconds: Double): TElevatorFrame;
+// 内側の窓に合成するフロア画像の切り替え区間と、窓の高さを1とした移動量を返す。
 function EvaluateFloorMotion(const S: TElevatorSchedule; Seconds: Double): TFloorMotion;
+// 連続階インデックスを階数表示用の B1、1F などに変換する。
 function FloorLabel(Index: Integer): string;
 // 始階、終階、現在階、目的階を優先し、残りを範囲内に分散して昇順で返す。
 function FloorButtons(const S: TElevatorSchedule; Capacity: Integer): TArray<Integer>;
+// 0〜1 の進行率に上下限を適用し、両端で速度が0になる補間率を返す。
 function Ease(Value: Double): Double;
 
 implementation
@@ -84,7 +91,16 @@ begin
   Result.OpenAt := Result.ArriveAt + S.Values[etArrivalWait];
   Result.OpenEnd := Result.OpenAt + S.Values[etOpen];
   Result.CloseAt := Result.OpenEnd + S.Values[etHold];
-  Result.EndAt := Result.CloseAt + S.Values[etClose];
+  Result.CloseEnd := Result.CloseAt + S.Values[etClose];
+  Result.OnwardDirection := 0;
+  Result.DestinationAt := Result.CloseEnd;
+  if S.Scene = esOutside then
+  begin
+    // 呼び寄せと閉扉後の移動に同じ「時間」を使い、タイムラインの長さで必要な区間を選べるようにする。
+    Result.OnwardDirection := Sign(Result.Destination - Result.OwnFloor);
+    if Result.OnwardDirection <> 0 then
+      Result.DestinationAt := Result.CloseEnd + S.Values[etTravel];
+  end;
 end;
 
 function Ease(Value: Double): Double;
@@ -94,9 +110,18 @@ begin
 end;
 
 function EvaluateFrame(const S: TElevatorSchedule; Seconds: Double): TElevatorFrame;
-var
-  Progress, Travelled: Double;
-  Steps: Integer;
+  procedure MoveBetween(StartAt, FinishAt: Double; FromFloor, ToFloor, MotionDirection: Integer);
+  var
+    Steps: Integer;
+    Travelled: Double;
+  begin
+    Steps := Abs(ToFloor - FromFloor);
+    Travelled := Steps * Ease((Seconds - StartAt) / (FinishAt - StartAt));
+    Result.FloorPosition := FromFloor + MotionDirection * Travelled;
+    // 終点の階数は到着時刻から表示する。丸め誤差で表示が先行するのを防ぐ。
+    Result.FloorIndex := FromFloor + MotionDirection * Min(Steps - 1, Trunc(Travelled));
+    Result.Direction := MotionDirection;
+  end;
 begin
   Result := Default(TElevatorFrame);
   Result.FloorIndex := S.StartFloor;
@@ -113,18 +138,28 @@ begin
     Exit;
   end;
   if Seconds < S.DepartAt then Exit;
-  Result.Arrived := Seconds >= S.ArriveAt;
-  if not Result.Arrived then
+  if Seconds < S.ArriveAt then
   begin
-    Progress := Ease((Seconds - S.DepartAt) / (S.ArriveAt - S.DepartAt));
-    Steps := Abs(S.TargetFloor - S.StartFloor);
-    Travelled := Steps * Progress;
-    Result.FloorPosition := S.StartFloor + S.Direction * Travelled;
-    Result.FloorIndex := S.StartFloor + S.Direction * Min(Steps - 1, Trunc(Travelled));
-    Result.Direction := S.Direction;
+    MoveBetween(S.DepartAt, S.ArriveAt, S.StartFloor, S.TargetFloor, S.Direction);
     Exit;
   end;
 
+  if (S.OnwardDirection <> 0) and (Seconds >= S.CloseEnd) then
+  begin
+    // 外側のカメラは乗り場に残る。閉扉後はかごと階数表示を進め、乗り場の戸は全閉を保つ。
+    Result.ButtonLit := False;
+    if Seconds < S.DestinationAt then
+      MoveBetween(S.CloseEnd, S.DestinationAt, S.OwnFloor, S.Destination, S.OnwardDirection)
+    else
+    begin
+      Result.FloorIndex := S.Destination;
+      Result.FloorPosition := S.Destination;
+      Result.Arrived := True;
+    end;
+    Exit;
+  end;
+
+  Result.Arrived := True;
   Result.FloorIndex := S.TargetFloor;
   Result.FloorPosition := S.TargetFloor;
   if Seconds < S.OpenAt then Exit;
@@ -132,8 +167,8 @@ begin
     Result.OpenAmount := Ease((Seconds - S.OpenAt) / (S.OpenEnd - S.OpenAt))
   else if Seconds < S.CloseAt then
     Result.OpenAmount := 1
-  else if Seconds < S.EndAt then
-    Result.OpenAmount := 1 - Ease((Seconds - S.CloseAt) / (S.EndAt - S.CloseAt));
+  else if Seconds < S.CloseEnd then
+    Result.OpenAmount := 1 - Ease((Seconds - S.CloseAt) / (S.CloseEnd - S.CloseAt));
 end;
 
 function EvaluateFloorMotion(const S: TElevatorSchedule; Seconds: Double): TFloorMotion;

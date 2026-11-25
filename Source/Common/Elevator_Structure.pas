@@ -2,7 +2,7 @@
 
 // Copyright (c) 2026 VRAMの魔術師
 // SPDX-License-Identifier: GPL-3.0-only
-// 固定の車体と乗り場、扉の開閉、開口部の透過をレイヤー別に描画する。
+// 場面ごとの車体、乗り場、扉を描画し、開口部の透過と前後レイヤーを管理する。
 
 interface
 
@@ -22,16 +22,19 @@ type
   TElevatorFloorView = record
     Active: Boolean;
     Motion: TFloorMotion;
-    Bitmap: ID2D1Bitmap;
+    Bitmap: ID2D1Bitmap; // レンダラーが保持する読み戻し画像。このフレームの描画に使う。
   end;
 
 const
   DESIGN_W = 960;
   DESIGN_H = 720;
 
+// 場面・種類ごとの開口と車体の位置を、960×720 の設計座標で返す。水平原点は扉の中心。
 function ElevatorLayout(Scene: TElevatorScene; Kind: TElevatorKind): TElevatorLayout;
+// 現在時刻のかごと窓越しの背景を描画先の奥側レイヤーへ重ねる。
 procedure DrawRear(C: TElevatorCanvas; const S: TElevatorSettings; const Schedule: TElevatorSchedule;
   const F: TElevatorFrame; const Layout: TElevatorLayout; const View: TElevatorFloorView);
+// 開き具合に合わせた戸と枠を、窓・開口部の透過を保って手前側レイヤーへ描く。
 procedure DrawFront(C: TElevatorCanvas; const S: TElevatorSettings; const F: TElevatorFrame;
   const Layout: TElevatorLayout);
 
@@ -142,8 +145,23 @@ end;
 procedure DrawTravelView(C: TElevatorCanvas; Style: TBackground; const View: TElevatorFloorView;
   X, Y, W, H: Single; Position: Double; CoverMissingBackground: Boolean); forward;
 
-procedure Cabin(C: TElevatorCanvas; const S: TElevatorSettings; const F: TElevatorFrame;
-  const O: TOpening; const View: TElevatorFloorView; Through: Boolean);
+// かご正面では、かごの背面と窓に描く風景で同じ投影範囲を使う。
+procedure CabinBackBounds(const O: TOpening; Kind: TElevatorKind;
+  out Left, Top, Right, Bottom: Single);
+begin
+  Left := O.X + O.W * 0.19;
+  Right := O.X + O.W * 0.81;
+  if Kind = ekGlass then
+  begin
+    Left := O.X + O.W * 0.08;
+    Right := O.X + O.W * 0.92;
+  end;
+  Top := O.Y + O.H * 0.13;
+  Bottom := O.Y + O.H * 0.83;
+end;
+
+procedure Cabin(C: TElevatorCanvas; const S: TElevatorSettings;
+  const O: TOpening; Through: Boolean);
 var
   X, Y, W, H, BackLeft, BackRight, BackTop, BackBottom, LampY, P: Single;
   I: Integer;
@@ -153,25 +171,14 @@ begin
   Y := O.Y;
   W := O.W;
   H := O.H;
-  BackLeft := X + W * 0.19;
-  BackRight := X + W * 0.81;
-  if S.Kind = ekGlass then
-  begin
-    BackLeft := X + W * 0.08;
-    BackRight := X + W * 0.92;
-  end;
-  BackTop := Y + H * 0.13;
-  BackBottom := Y + H * 0.83;
+  CabinBackBounds(O, S.Kind, BackLeft, BackTop, BackRight, BackBottom);
   Wall := S.Colors[2];
   FloorColor := Shade(Wall, 0.60);
   Ceiling := Shade(S.Colors[1], 0.69);
   Accent := S.Colors[3];
   C.PushClip(X, Y, W, H);
   try
-    if Through then
-      DrawTravelView(C, S.Background, View, BackLeft, BackTop, BackRight - BackLeft,
-        BackBottom - BackTop, F.FloorPosition, False)
-    else
+    if not Through then
     begin
       C.Panel(BackLeft, BackTop, BackRight - BackLeft, BackBottom - BackTop, 0,
         Shade(Wall, 1.24), Wall, Shade(Wall, 0.52));
@@ -550,12 +557,41 @@ begin
   end;
 end;
 
+procedure DrawCabinThroughLanding(C: TElevatorCanvas; const S: TElevatorSettings;
+  const Schedule: TElevatorSchedule; const F: TElevatorFrame;
+  const O: TOpening; Through: Boolean);
+const
+  FLOOR_PITCH = 1.10; // かごの高さに対する階間の間隔
+var
+  OffsetY: Single;
+  Moving: TOpening;
+begin
+  OffsetY := (Schedule.OwnFloor - F.FloorPosition) * O.H * FLOOR_PITCH;
+  // ガラス越しの視点を乗り場の位置と自分の階に固定する。
+  // 背景を戸口全体に敷き、かごが通過した部分にも同じ景色を表示する。
+  C.PushClip(O.X, O.Y, O.W, O.H);
+  try
+    if Through then
+      DrawScenery(C, S.Background, O.X, O.Y, O.W, O.H, Schedule.OwnFloor)
+    else if OffsetY <> 0 then
+      DrawShaft(C, O.X, O.Y, O.W, O.H, Schedule.OwnFloor);
+    if Abs(OffsetY) < O.H then
+    begin
+      Moving := O;
+      Moving.Y := Moving.Y + OffsetY;
+      Cabin(C, S, Moving, Through);
+    end;
+  finally
+    C.PopClip;
+  end;
+end;
+
 procedure DrawRear(C: TElevatorCanvas; const S: TElevatorSettings; const Schedule: TElevatorSchedule;
   const F: TElevatorFrame; const Layout: TElevatorLayout; const View: TElevatorFloorView);
 var
   O: TOpening;
+  Left, Top, Right, Bottom: Single;
   Through: Boolean;
-  ShaftOpacity: Single;
 begin
   O := Layout.Opening;
   if Layout.Panorama then
@@ -571,21 +607,19 @@ begin
   end;
   Through := (S.Door = dsGlass) or (S.Kind in [ekGlass, ekConstruction, ekMine]) or
     (SeeThroughDoor(S.Door) and (S.Background <> bgNone));
-  if S.Scene = esCarFront then
-    Through := Through or SeeThroughDoor(S.Door) or HasDoorWindow(S);
-  ShaftOpacity := 0;
-  if (S.Scene = esOutside) and HasDoorWindow(S) then
-    ShaftOpacity := Ease(Abs(F.FloorPosition - Schedule.TargetFloor) / 0.45);
-  if ShaftOpacity < 1 then Cabin(C, S, F, O, View, Through);
-  if ShaftOpacity > 0 then
+  if S.Scene = esOutside then
   begin
-    C.PushOpacity(O.X, O.Y, O.W, O.H, ShaftOpacity);
-    try
-      DrawShaft(C, O.X, O.Y, O.W, O.H, F.FloorPosition);
-    finally
-      C.PopShapeClip;
-    end;
+    DrawCabinThroughLanding(C, S, Schedule, F, O, Through);
+    Exit;
   end;
+  Through := Through or SeeThroughDoor(S.Door) or HasDoorWindow(S);
+  // かご正面のカメラは車内と一緒に動くため、連続階位置で窓の眺望を変える。
+  if Through then
+  begin
+    CabinBackBounds(O, S.Kind, Left, Top, Right, Bottom);
+    DrawTravelView(C, S.Background, View, Left, Top, Right - Left, Bottom - Top, F.FloorPosition, False);
+  end;
+  Cabin(C, S, O, Through);
 end;
 
 procedure Fastener(C: TElevatorCanvas; X, Y: Single; Color: Cardinal);

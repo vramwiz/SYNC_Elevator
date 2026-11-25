@@ -8,11 +8,13 @@ interface
 
 uses Elevator_Canvas, Elevator_Settings;
 
-// 指定した矩形内だけに描画し、階位置が増えると建物を下方へ送る。
+// 指定した矩形内へ描く。FloorPosition は 1F=0、B1=-1 の連続階位置。
+// 外側には乗り場の値、車内には現在のかごの値を渡す。背景なしでは描画先を透過のまま保つ。
 procedure DrawScenery(C: TElevatorCanvas; Style: TBackground; X, Y, W, H: Single;
   FloorPosition: Double);
-// 縦窓用の簡易背景。呼び出し側で窓または開口部にクリップする。
+// 構造物の隙間へレールと梁を描く。呼び出し側で窓または開口部にクリップする。
 procedure DrawShaft(C: TElevatorCanvas; X, Y, W, H: Single; FloorPosition: Double);
+// 車内の縦窓越しに向かい側の廊下を描き、階間では昇降路の構造を見せる。
 procedure DrawLandingView(C: TElevatorCanvas; X, Y, W, H: Single; FloorPosition: Double);
 
 implementation
@@ -179,6 +181,76 @@ begin
   end;
 end;
 
+procedure DrawNearBuildings(C: TElevatorCanvas; Style: TBackground; const V: TGroundView;
+  Color: Cardinal);
+const
+  LEFT_HEIGHTS: array[TBackground] of Single = (0, 3.2, 6.8, 4.4, 2.9);
+  RIGHT_HEIGHTS: array[TBackground] of Single = (0, 0, 8.4, 5.1, 0);
+begin
+  // 窓の端に近い建物を置く。上昇すると屋根が見え、そのまま窓の下へ抜ける。
+  DrawBuilding(C, V, Style, -3.05, 7.6, 1.75, 2.9, LEFT_HEIGHTS[Style], Shade(Color, 0.91));
+  if RIGHT_HEIGHTS[Style] > 0 then
+    DrawBuilding(C, V, Style, 3.85, 8.7, 1.99, 3.4, RIGHT_HEIGHTS[Style], Shade(Color, 0.99));
+end;
+
+procedure DrawNearTree(C: TElevatorCanvas; const V: TGroundView);
+var
+  Root, Crown: TD2D1Point2F;
+  Radius: Single;
+begin
+  Root := V.Project(3.15, 8.4, 0);
+  Crown := V.Project(3.15, 8.4, 3.25);
+  Radius := V.H * 0.073;
+  if (Crown.Y - Radius >= V.Y + V.H) or (Root.Y <= V.Y) then Exit;
+  C.Line(Root.X, Root.Y, Crown.X + V.W * 0.012, Crown.Y, Max(1.0, V.W * 0.011), $453B30);
+  C.Oval(Crown.X + V.W * 0.018, Crown.Y + Radius * 0.28, V.W * 0.058, Radius * 0.85, $465C4A);
+  C.Oval(Crown.X - V.W * 0.016, Crown.Y - Radius * 0.12, V.W * 0.059, Radius, $627A58);
+  C.Oval(Crown.X - V.W * 0.025, Crown.Y - Radius * 0.24, V.W * 0.039, Radius * 0.58, $82946A);
+end;
+
+procedure DrawNearStructure(C: TElevatorCanvas; Style: TBackground; const V: TGroundView;
+  Position: Double);
+const
+  POST_COLORS: array[TBackground] of Cardinal = (0, $776958, $596D74, $8A7567, $606C66);
+  LEDGE_COLORS: array[TBackground] of Cardinal = (0, $AE9D7E, $89999F, $C3AB92, $9EAAA0);
+var
+  Frame, Ledge, Shadow: Cardinal;
+  Gap, Offset, RailY, Reach: Single;
+  I: Integer;
+  procedure Post(X, Width: Single);
+  begin
+    C.Panel(X, V.Y, Width, V.H, 0, Shade(Frame, 1.09), Frame, Shade(Frame, 0.63));
+    C.Box(X + Width * 0.14, V.Y, Max(0.5, Width * 0.10), V.H, 0, Ledge, 0.63);
+    C.Box(X + Width * 0.79, V.Y, Width * 0.21, V.H, 0, Shadow);
+  end;
+begin
+  Frame := POST_COLORS[Style];
+  Ledge := LEDGE_COLORS[Style];
+  Shadow := Shade(Frame, 0.59);
+  if Style in [bgResidential, bgScenic] then DrawNearTree(C, V);
+  // 窓際の柱の継ぎ目と張り出しは、遠くの建物より速く流れる。
+  Post(V.X + V.W * 0.043, V.W * 0.054);
+  Post(V.X + V.W * 0.902, V.W * 0.033);
+  Gap := V.H * 0.54;
+  Offset := Position * 0.61 + 0.30;
+  Offset := (Offset - Floor(Offset)) * Gap;
+  Reach := 0.16;
+  if Style = bgMall then Reach := 0.186;
+  for I := -1 to 2 do
+  begin
+    RailY := V.Y + Offset + I * Gap;
+    C.Polygon([Pt(V.X, RailY), Pt(V.X + V.W * Reach, RailY + V.H * 0.014),
+      Pt(V.X + V.W * Reach, RailY + V.H * 0.045), Pt(V.X, RailY + V.H * 0.030)], Frame);
+    C.Line(V.X, RailY, V.X + V.W * Reach, RailY + V.H * 0.014, 1.35, Ledge);
+    C.Box(V.X + V.W * 0.055, RailY + V.H * 0.031, V.W * 0.030, V.H * 0.050, 0, Shadow);
+
+    RailY := RailY + V.H * 0.16;
+    C.Polygon([Pt(V.X + V.W * 0.865, RailY + V.H * 0.013), Pt(V.X + V.W, RailY),
+      Pt(V.X + V.W, RailY + V.H * 0.025), Pt(V.X + V.W * 0.865, RailY + V.H * 0.037)], Frame);
+    C.Line(V.X + V.W * 0.865, RailY + V.H * 0.013, V.X + V.W, RailY, 1.2, Ledge);
+  end;
+end;
+
 procedure DrawAboveGround(C: TElevatorCanvas; Style: TBackground; X, Y, W, H: Single;
   Position: Double);
 const
@@ -248,6 +320,8 @@ begin
       Color := Shade(Color, 0.84 + Variant * 0.09);
       DrawBuilding(C, V, Style, Center, Distance, Width, Depth, Tall, Color);
     end;
+  DrawNearBuildings(C, Style, V, BUILDING_COLORS[Style]);
+  DrawNearStructure(C, Style, V, Position);
 end;
 
 procedure DrawUnderground(C: TElevatorCanvas; X, Y, W, H: Single; Position: Double);
@@ -271,6 +345,20 @@ begin
     C.Line(X, BeamY + H * 0.008, X + W, BeamY + H * 0.008, 0.85, $34383E, 0.66);
     C.Box(X + W * 0.142, BeamY - H * 0.014, W * 0.080, H * 0.085, 0.9, $21262A);
     C.Box(X + W * 0.778, BeamY - H * 0.014, W * 0.080, H * 0.085, 0.9, $21262A);
+  end;
+
+  C.Box(X + W * 0.033, Y, W * 0.056, H, 0, $14191D);
+  C.Box(X + W * 0.914, Y, W * 0.050, H, 0, $14191D);
+  Gap := H * 0.61;
+  Offset := Position * 1.02 + 0.16;
+  Offset := (Offset - Floor(Offset)) * Gap;
+  for I := -1 to 2 do
+  begin
+    BeamY := Y + Offset + I * Gap;
+    C.Polygon([Pt(X, BeamY), Pt(X + W * 0.145, BeamY + H * 0.016),
+      Pt(X + W * 0.145, BeamY + H * 0.063), Pt(X, BeamY + H * 0.045)], $23292D);
+    C.Polygon([Pt(X + W * 0.872, BeamY + H * 0.16), Pt(X + W, BeamY + H * 0.144),
+      Pt(X + W, BeamY + H * 0.191), Pt(X + W * 0.872, BeamY + H * 0.207)], $23292D);
   end;
 end;
 

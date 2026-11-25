@@ -3,11 +3,11 @@
     [string]$XxhsumPath
 )
 
-# SYNC_AquaFX/setupを継承。既存のWeatherFX本番AUF2を梱包し、末尾バージョンのハッシュを更新する。
+# SYNC_Elevator の配布 ZIP を作成し、カタログの末尾バージョンに同梱 AUF2 のハッシュを記録する。
 # ビルド・ホスト起動・ネットワークへの公開は行わない。
 # Copyright (c) 2026 VRAMの魔術師 / SPDX-License-Identifier: GPL-3.0-only
 $ErrorActionPreference = 'Stop'
-$packageName = 'SYNC_WeatherFX'
+$packageName = 'SYNC_Elevator'
 $projectDir = Split-Path -Parent $PSScriptRoot
 if (-not $ReleaseDirectory) { $ReleaseDirectory = Join-Path $env:ProgramData "aviutl2\Plugin\$packageName" }
 $pluginName = "$packageName.auf2"
@@ -32,12 +32,10 @@ $tempBase = Join-Path $PSScriptRoot ('.release-' + [guid]::NewGuid().ToString('N
 $tempPlugin = "$tempBase-plugin.tmp"
 $tempZip = "$tempBase-zip.tmp"
 $tempCatalog = "$tempBase-catalog.tmp"
-$tempNotices = "$tempBase-notices.tmp"
-$tempReadme = "$tempBase-readme.tmp"
 $catalogBackup = "$tempBase-previous-catalog.tmp"
 
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
-$lock = [Threading.Mutex]::new($false, 'Local\VRAMWIZ.SYNC_WeatherFX.ReleaseZip')
+$lock = [Threading.Mutex]::new($false, "Local\VRAMWIZ.$packageName.ReleaseZip")
 $ownsLock = $false
 try {
     try { $ownsLock = $lock.WaitOne(0) }
@@ -64,7 +62,7 @@ try {
     }
     if (@($entry.version).Count -eq 0) { throw 'The catalog must contain a release version.' }
     if ($entry.version[0].version -cne 'v1.0.0') {
-        throw 'The first public WeatherFX version must be v1.0.0.'
+        throw 'The first public SYNC_Elevator version must be v1.0.0.'
     }
     $version = $catalog[0].version[-1]
     $releaseDate = [datetime]::MinValue
@@ -94,18 +92,13 @@ try {
 
     $packageFiles = [ordered]@{
         $pluginName = $tempPlugin
-        'README.md' = $tempReadme
+        'README.md' = Join-Path $projectDir 'README.md'
+        'docs/preview.png' = Join-Path $projectDir 'docs\preview.png'
         'LICENSE' = Join-Path $projectDir 'LICENSE'
-        'THIRD_PARTY_NOTICES.md' = $tempNotices
+        'THIRD_PARTY_NOTICES.md' = Join-Path $projectDir 'THIRD_PARTY_NOTICES.md'
         'ThirdParty/LICENSE.AviUtl2-SDK.txt' = Join-Path $projectDir 'ThirdParty\LICENSE.AviUtl2-SDK.txt'
     }
-    # 開発用と配布用で同じライセンス配置を使用する。
-    $notices = [IO.File]::ReadAllText((Join-Path $projectDir 'THIRD_PARTY_NOTICES.md'))
-    [IO.File]::WriteAllText($tempNotices, $notices, [Text.UTF8Encoding]::new($false))
-    # ルートREADMEを配布用にも使用する。画像はソース公開先を参照し、ZIP内の不足リンクを避ける。
-    $readme = [IO.File]::ReadAllText((Join-Path $projectDir 'README.md'))
-    $readme = $readme.Replace('](Sample/', "](https://raw.githubusercontent.com/vramwiz/$packageName/main/Sample/")
-    [IO.File]::WriteAllText($tempReadme, $readme, [Text.UTF8Encoding]::new($false))
+    # README の相対リンクを展開先でも使えるように、画像とライセンスを同じ配置で梱包する。
     foreach ($file in $packageFiles.Values) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Package file not found: $file" }
     }
@@ -152,7 +145,7 @@ try {
 finally {
     if ($ownsLock) { $lock.ReleaseMutex() }
     $lock.Dispose()
-    foreach ($tempPath in @($tempPlugin, $tempZip, $tempCatalog, $tempNotices, $tempReadme)) {
+    foreach ($tempPath in @($tempPlugin, $tempZip, $tempCatalog)) {
         [IO.File]::Delete($tempPath)
     }
 }
