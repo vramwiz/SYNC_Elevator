@@ -8,6 +8,7 @@ interface
 
 type
   TElevatorScene = (esOutside, esInside, esCarFront);
+  TElevatorMotion = (emAutomatic, emArriveAndOpen, emCloseAndDepart, emTravelOnly, emDoorsOnly);
   TElevatorEra = (eeMeiji, eeEarlyShowa, eeMidShowa, eeLateShowa,
     eeHeisei, eeReiwa, eeFuture);
   TElevatorKind = (ekStandard, ekGlass, ekFreight, ekConstruction, ekMine);
@@ -29,6 +30,7 @@ type
 
   TElevatorSettings = record
     Scene: TElevatorScene;
+    Motion: TElevatorMotion;
     Era: TElevatorEra;
     Kind: TElevatorKind;
     Door: TDoorStyle;
@@ -44,6 +46,8 @@ type
 
 const
   SCENE_NAMES: array[TElevatorScene] of PWideChar = ('外', '中', '中（かご正面）');
+  MOTION_NAMES: array[TElevatorMotion] of PWideChar = ('従来どおり', '到着して開く',
+    '閉じて出発', '移動のみ', '開閉のみ');
   ERA_NAMES: array[TElevatorEra] of PWideChar = ('明治・大正風', '昭和初期風',
     '昭和中期風', '昭和後期風', '平成風', '令和風', '近未来風');
   KIND_NAMES: array[TElevatorKind] of PWideChar = ('標準', '展望・ガラス張り',

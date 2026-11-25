@@ -62,7 +62,7 @@ begin
   if S.Scene <> esOutside then Pitch := 1030;
   if S.Era <= eeMidShowa then Pitch := Pitch * 0.59;
   Value := 0;
-  if Age < 0.12 then
+  if Schedule.PressButton and (Age < 0.12) then
     Value := Pulse(Age, 0.12) * (Tone(Pitch, Age) + 0.37 * Tone(Pitch * 2.13, Age)) * 0.26;
   if Schedule.StartsOpen then
     Value := Value + DoorClosingSound(Seconds, Schedule.PressAt, Schedule.EntryClosedAt, MotorPitch);
@@ -70,7 +70,7 @@ begin
   Value := Value + 0.21 * Motor(Age, Schedule.ArriveAt - Schedule.DepartAt, MotorPitch);
 
   Age := Seconds - Schedule.ArriveAt;
-  if (Age >= 0) and (Age < 1.15) then
+  if Schedule.PlayArrivalChime and (Age >= 0) and (Age < 1.15) then
   begin
     Pitch := 698.46;
     if S.Era <= eeEarlyShowa then Pitch := 523.25;

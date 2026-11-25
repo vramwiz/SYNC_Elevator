@@ -26,9 +26,10 @@ const
 var
   PresetScene, PresetEra, PresetKind, SceneItem, EraItem, KindItem: TFILTER_ITEM_SELECT;
   DoorItem, DoorWindowItem, IndicatorItem, PanelItem, BackgroundItem: TFILTER_ITEM_SELECT;
-  StartDoorItem: TFILTER_ITEM_SELECT;
+  StartDoorItem, MotionItem: TFILTER_ITEM_SELECT;
   HideStartDoor, HideClosedWait, HideFrontCabControls: TFILTER_ITEM_HIDE_RULE;
   SceneOptions: array[0..Ord(High(TElevatorScene)) + 1] of TFILTER_ITEM_SELECT_ITEM;
+  MotionOptions: array[0..Ord(High(TElevatorMotion)) + 1] of TFILTER_ITEM_SELECT_ITEM;
   EraOptions: array[0..Ord(High(TElevatorEra)) + 1] of TFILTER_ITEM_SELECT_ITEM;
   KindOptions: array[0..Ord(High(TElevatorKind)) + 1] of TFILTER_ITEM_SELECT_ITEM;
   DoorOptions: array[0..Ord(High(TDoorStyle)) + 1] of TFILTER_ITEM_SELECT_ITEM;
@@ -89,7 +90,7 @@ begin
     EffectName := Effect;
     S := PresetSettings(TElevatorScene(Selection(PresetScene, SCENE_NAMES)),
       TElevatorEra(Selection(PresetEra, ERA_NAMES)), TElevatorKind(Selection(PresetKind, KIND_NAMES)));
-    // オブジェクトの複製後も、階数、秒数、レイヤー、音声の設定を引き継げる。
+    // オブジェクトの複製後も、動作パターン、階数、秒数、レイヤー、音声の設定を引き継げる。
     SetValue(SceneItem.Name, SCENE_NAMES[S.Scene]);
     SetValue(EraItem.Name, ERA_NAMES[S.Era]);
     SetValue(KindItem.Name, KIND_NAMES[S.Kind]);
@@ -131,6 +132,7 @@ var
 begin
   S := PresetSettings(esOutside, eeReiwa, ekStandard);
   FillOptions(SCENE_NAMES, SceneOptions);
+  FillOptions(MOTION_NAMES, MotionOptions);
   FillOptions(ERA_NAMES, EraOptions);
   FillOptions(KIND_NAMES, KindOptions);
   FillOptions(DOOR_NAMES, DoorOptions);
@@ -156,6 +158,7 @@ begin
   EndGroup(2);
 
   BeginGroup(3);
+  AddSelect(MotionItem, '動作パターン', Ord(S.Motion), @MotionOptions[0]);
   AddTracks(etWait, etWait);
   AddTracks(etClosedWait, etClosedWait);
   AddTracks(etTravel, etTravel);
@@ -210,6 +213,9 @@ var
 begin
   Result := Default(TElevatorSettings);
   Result.Scene := TElevatorScene(EnsureRange(SceneItem.Value, 0, Ord(High(TElevatorScene))));
+  if (MotionItem.Value >= Ord(Low(TElevatorMotion))) and
+    (MotionItem.Value <= Ord(High(TElevatorMotion))) then
+    Result.Motion := TElevatorMotion(MotionItem.Value);
   Result.Era := TElevatorEra(EnsureRange(EraItem.Value, 0, Ord(High(TElevatorEra))));
   Result.Kind := TElevatorKind(EnsureRange(KindItem.Value, 0, Ord(High(TElevatorKind))));
   Result.Door := TDoorStyle(EnsureRange(DoorItem.Value, 0, Ord(High(TDoorStyle))));

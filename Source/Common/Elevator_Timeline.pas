@@ -11,9 +11,9 @@ uses Elevator_Settings;
 type
   TElevatorSchedule = record
     FirstFloor, LastFloor, OwnFloor, Destination: Integer; // 連続階インデックス
-    // 外側の TargetFloor は最初に到着する乗り場を指す。目的階への移動は閉扉後に始まる。
+    // TargetFloor は1回目の移動の到着階。「従来どおり」の外側だけ閉扉後に2回目の移動を行う。
     StartFloor, TargetFloor, Direction, CallDirection, OnwardDirection: Integer;
-    StartsOpen: Boolean;
+    StartsOpen, HoldsOpen, PressButton, PlayArrivalChime: Boolean;
     // オブジェクト先頭からの秒。外側の DestinationAt は閉扉後の移動が終わる時刻。
     // 移動区間が無い場合は CloseEnd と同じ値を使い、効果音の長さを0秒にする。
     PressAt, EntryClosedAt, DepartAt, ArriveAt, OpenAt, OpenEnd, CloseAt, CloseEnd, DestinationAt: Double;
@@ -32,7 +32,7 @@ type
     Offset: Single; // 窓の高さを1とした、上下の移動量
   end;
 
-// 設定の階数を建物の範囲に収め、場面に合わせた映像・音声用の時刻を返す。
+// 階数を建物の範囲に収め、場面と動作パターンに合わせた映像・音声用の時刻を返す。
 function MakeSchedule(const S: TElevatorSettings): TElevatorSchedule;
 // オブジェクト内の経過秒から座標と表示状態を求める。シーク時も同じ時刻なら同じ状態を返す。
 function EvaluateFrame(const S: TElevatorSchedule; Seconds: Double): TElevatorFrame;
@@ -65,12 +65,11 @@ begin
   Result.LastFloor := Max(Lower, Upper);
   Result.OwnFloor := EnsureRange(ToIndex(Round(S.Values[etOwnFloor])), Result.FirstFloor, Result.LastFloor);
   Result.Destination := EnsureRange(ToIndex(Round(S.Values[etDestination])), Result.FirstFloor, Result.LastFloor);
-  if S.Scene <> esOutside then
-  begin
-    Result.StartFloor := Result.OwnFloor;
-    Result.TargetFloor := Result.Destination;
-  end
-  else
+  Result.StartFloor := Result.OwnFloor;
+  Result.TargetFloor := Result.Destination;
+  if S.Motion = emDoorsOnly then
+    Result.TargetFloor := Result.OwnFloor
+  else if (S.Scene = esOutside) and (S.Motion <> emCloseAndDepart) then
   begin
     Result.StartFloor := EnsureRange(ToIndex(Round(S.Values[etInitialFloor])), Result.FirstFloor, Result.LastFloor);
     Result.TargetFloor := Result.OwnFloor;
@@ -79,22 +78,41 @@ begin
   Result.Direction := Sign(Result.TargetFloor - Result.StartFloor);
   Result.CallDirection := Sign(Result.Destination - Result.OwnFloor);
   if Result.CallDirection = 0 then Result.CallDirection := 1;
-  Result.StartsOpen := (S.Scene <> esOutside) and (S.StartDoor = sdCloseFromOpen);
+  Result.StartsOpen := (S.Motion = emCloseAndDepart) or
+    ((S.Motion = emAutomatic) and (S.Scene <> esOutside) and (S.StartDoor = sdCloseFromOpen));
+  Result.HoldsOpen := S.Motion = emArriveAndOpen;
+  Result.PressButton := (S.Motion in [emAutomatic, emArriveAndOpen]) or
+    ((S.Motion = emCloseAndDepart) and (S.Scene <> esOutside));
+  Result.PlayArrivalChime := S.Motion in [emAutomatic, emArriveAndOpen];
+
   Result.PressAt := S.Values[etWait];
   Result.EntryClosedAt := Result.PressAt;
   if Result.StartsOpen then Result.EntryClosedAt := Result.PressAt + S.Values[etClose];
   Result.DepartAt := Result.EntryClosedAt;
-  if S.Scene <> esOutside then Result.DepartAt := Result.EntryClosedAt + S.Values[etClosedWait];
+  if (S.Scene <> esOutside) and (S.Motion in [emAutomatic, emArriveAndOpen, emCloseAndDepart]) then
+    Result.DepartAt := Result.EntryClosedAt + S.Values[etClosedWait];
   Result.ArriveAt := Result.DepartAt;
   if Result.Direction <> 0 then
     Result.ArriveAt := Result.DepartAt + S.Values[etTravel];
-  Result.OpenAt := Result.ArriveAt + S.Values[etArrivalWait];
-  Result.OpenEnd := Result.OpenAt + S.Values[etOpen];
-  Result.CloseAt := Result.OpenEnd + S.Values[etHold];
-  Result.CloseEnd := Result.CloseAt + S.Values[etClose];
+  // 省略した扉の動作は開始と終了を同時刻にして、映像と音声で同じ区間を使う。
+  Result.OpenAt := Result.ArriveAt;
+  Result.OpenEnd := Result.OpenAt;
+  if S.Motion in [emAutomatic, emArriveAndOpen, emDoorsOnly] then
+  begin
+    if S.Motion <> emDoorsOnly then
+      Result.OpenAt := Result.ArriveAt + S.Values[etArrivalWait];
+    Result.OpenEnd := Result.OpenAt + S.Values[etOpen];
+  end;
+  Result.CloseAt := Result.OpenEnd;
+  Result.CloseEnd := Result.CloseAt;
+  if S.Motion in [emAutomatic, emDoorsOnly] then
+  begin
+    Result.CloseAt := Result.OpenEnd + S.Values[etHold];
+    Result.CloseEnd := Result.CloseAt + S.Values[etClose];
+  end;
   Result.OnwardDirection := 0;
   Result.DestinationAt := Result.CloseEnd;
-  if S.Scene = esOutside then
+  if (S.Scene = esOutside) and (S.Motion = emAutomatic) then
   begin
     // 呼び寄せと閉扉後の移動に同じ「時間」を使い、タイムラインの長さで必要な区間を選べるようにする。
     Result.OnwardDirection := Sign(Result.Destination - Result.OwnFloor);
@@ -131,7 +149,7 @@ begin
     if S.StartsOpen then Result.OpenAmount := 1;
     Exit;
   end;
-  Result.ButtonLit := Seconds < Max(S.ArriveAt, S.PressAt + 0.12);
+  Result.ButtonLit := S.PressButton and (Seconds < Max(S.ArriveAt, S.PressAt + 0.12));
   if Seconds < S.EntryClosedAt then
   begin
     Result.OpenAmount := 1 - Ease((Seconds - S.PressAt) / (S.EntryClosedAt - S.PressAt));
@@ -165,7 +183,7 @@ begin
   if Seconds < S.OpenAt then Exit;
   if Seconds < S.OpenEnd then
     Result.OpenAmount := Ease((Seconds - S.OpenAt) / (S.OpenEnd - S.OpenAt))
-  else if Seconds < S.CloseAt then
+  else if S.HoldsOpen or (Seconds < S.CloseAt) then
     Result.OpenAmount := 1
   else if Seconds < S.CloseEnd then
     Result.OpenAmount := 1 - Ease((Seconds - S.CloseAt) / (S.CloseEnd - S.CloseAt));

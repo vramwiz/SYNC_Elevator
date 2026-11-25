@@ -1404,6 +1404,136 @@ begin
 end;
 
 
+procedure TestMotionPatterns;
+var
+  S: TElevatorSettings;
+  T: TElevatorSchedule;
+  F: TElevatorFrame;
+  A: TElevatorScene;
+  Motion: TElevatorMotion;
+  Item: PFILTER_ITEM_SELECT;
+  Option: POption;
+  OpenHash, DefaultHash: string;
+begin
+  Item := FindItem('動作パターン');
+  Require(Item^.Value = Ord(emAutomatic), 'legacy motion is the default');
+  Option := POption(Item^.List);
+  for Motion := Low(TElevatorMotion) to High(TElevatorMotion) do
+  begin
+    Require((Option^.Value = Ord(Motion)) and (string(Option^.Name) = string(MOTION_NAMES[Motion])),
+      'registered motion option');
+    Inc(Option);
+  end;
+  Require(Option^.Name = nil, 'motion list terminator');
+
+  for A := Low(TElevatorScene) to High(TElevatorScene) do
+  begin
+    S := PresetSettings(A, eeReiwa, ekStandard);
+    S.StartDoor := sdCloseFromOpen;
+    S.Values[etArrivalWait] := 0.75;
+    S.Values[etClosedWait] := 0.25;
+
+    S.Motion := emArriveAndOpen;
+    T := MakeSchedule(S);
+    Require(not T.StartsOpen and (T.Direction = 2 * Ord(A <> esOutside) - 1) and
+      (T.OnwardDirection = 0) and (T.OpenAt - T.ArriveAt = 0.75), 'arrival-only route and wait');
+    F := EvaluateFrame(T, T.ArriveAt);
+    Require(F.Arrived and (F.FloorIndex = T.TargetFloor) and (F.OpenAmount = 0),
+      'doors stay closed during the arrival wait');
+    Require((EvaluateFrame(T, T.OpenAt + 0.1).OpenAmount > 0) and
+      (EvaluateFrame(T, T.OpenEnd + 60).OpenAmount = 1), 'arrival opens and holds');
+
+    S.Motion := emCloseAndDepart;
+    T := MakeSchedule(S);
+    Require((T.StartFloor = T.OwnFloor) and (T.TargetFloor = T.Destination) and
+      (T.DepartAt - T.EntryClosedAt = 0.25 * Ord(A <> esOutside)), 'departure route and wait');
+    Require(EvaluateFrame(T, 0).OpenAmount = 1, 'departure starts open');
+    F := EvaluateFrame(T, (T.PressAt + T.EntryClosedAt) * 0.5);
+    Require(SameValue(F.OpenAmount, 0.5, 1E-6) and (F.Direction = 0)
+      and (F.ButtonLit = (A <> esOutside)), 'closing precedes travel');
+    F := EvaluateFrame(T, T.DepartAt);
+    Require((F.OpenAmount = 0) and (F.Direction = 1), 'departure starts fully closed');
+    F := EvaluateFrame(T, T.ArriveAt + 60);
+    Require(F.Arrived and (F.FloorIndex = T.Destination) and (F.OpenAmount = 0),
+      'departure ends with doors closed');
+
+    S.Motion := emTravelOnly;
+    T := MakeSchedule(S);
+    F := EvaluateFrame(T, T.DepartAt);
+    Require((T.DepartAt = T.PressAt) and (F.Direction <> 0) and not F.ButtonLit
+      and (F.OpenAmount = 0), 'travel only moves the car');
+    Require(EvaluateFloorMotion(T, T.DepartAt + 0.25).Phase = fpLeaving,
+      'travel only moves the floor image');
+    Require(EvaluateFrame(T, T.ArriveAt + 60).OpenAmount = 0, 'travel only ends closed');
+
+    S.Motion := emDoorsOnly;
+    T := MakeSchedule(S);
+    F := EvaluateFrame(T, T.OpenEnd);
+    Require((T.OpenAt = T.PressAt) and (F.FloorIndex = T.OwnFloor) and (F.Direction = 0)
+      and not F.ButtonLit and (F.OpenAmount = 1), 'doors only open on the parked floor');
+    Require((EvaluateFloorMotion(T, T.OpenAt).Phase = fpStill) and
+      (EvaluateFrame(T, T.CloseEnd).OpenAmount = 0), 'doors only close without movement');
+
+    S.Motion := emArriveAndOpen;
+    S.Values[etInitialFloor] := S.Values[etOwnFloor];
+    S.Values[etDestination] := S.Values[etOwnFloor];
+    S.Values[etOpen] := 0;
+    T := MakeSchedule(S);
+    F := EvaluateFrame(T, T.OpenAt);
+    Require((T.DepartAt = T.ArriveAt) and (F.Direction = 0)
+      and (F.OpenAmount = 1), 'same-floor arrival opens instantly with zero opening time');
+  end;
+
+  Select('動作パターン', Ord(emArriveAndOpen));
+  Preset(esOutside, eeReiwa, ekGlass);
+  Require(Item^.Value = Ord(emArriveAndOpen), 'appearance preset preserves the motion');
+  Track(etOwnFloor, 3);
+  Track(etInitialFloor, 6);
+  Track(etDestination, 1);
+  Track(etWait, 0.5);
+  Track(etTravel, 2);
+  Track(etArrivalWait, 0.75);
+  Track(etOpen, 1);
+  Track(etHold, 1);
+  Track(etClose, 1);
+
+  DrawFrame(150);
+  OpenHash := HashBytes;
+  DrawFrame(300);
+  Require(HashBytes = OpenHash, 'arrival hold persists in host video');
+  DrawFrame(0);
+  Require(HashBytes <> OpenHash, 'arrival is closed before the call');
+  DrawFrame(150);
+  Require(HashBytes = OpenHash, 'arrival hold reproduces after a backward seek');
+  Require((Energy(2.6) > 0.1) and (Energy(3.7) > 0.1) and (Energy(5.7) = 0),
+    'arrival chime and opening play without a later close');
+
+  Select('動作パターン', Ord(emCloseAndDepart));
+  DrawFrame(0);
+  Require(HashBytes = OpenHash, 'outside departure starts parked and open');
+  DrawFrame(60);
+  Require(HashBytes <> OpenHash, 'outside departure leaves the landing');
+  Require((Energy(0.9) > 0.1) and (Energy(1.9) > 0.1) and (Energy(3.6) = 0),
+    'departure plays closing and driving with no arrival effect');
+
+  Select('動作パターン', Ord(emTravelOnly));
+  Require((Energy(1.2) > 0.1) and (Energy(2.6) = 0) and (Energy(3.7) = 0),
+    'travel only plays the driving motor');
+  Select('動作パターン', Ord(emDoorsOnly));
+  DrawFrame(54);
+  Require(HashBytes = OpenHash, 'doors only open on the landing in host video');
+  Require((Energy(0.9) > 0.1) and (Energy(1.8) = 0) and (Energy(2.8) > 0.1) and (Energy(3.7) = 0),
+    'doors only play the opening and closing effects');
+
+  Select('動作パターン', Ord(emAutomatic));
+  DrawFrame(210);
+  DefaultHash := HashBytes;
+  Select('動作パターン', High(Integer));
+  DrawFrame(210);
+  Require(HashBytes = DefaultHash, 'invalid motion falls back to the default');
+  Select('動作パターン', Ord(emAutomatic));
+end;
+
 procedure Run;
 var
   Required: TRequired;
@@ -1454,6 +1584,7 @@ begin
       TestExteriorApproach;
       TestExteriorOnward;
       TestExteriorLandingBackground;
+      TestMotionPatterns;
     finally
       Table^.Func_Destroy(1, Video.UserData);
       Uninitialize();
