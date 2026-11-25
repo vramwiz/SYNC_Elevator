@@ -3,7 +3,7 @@
         "id":  "VRAMWIZ.SYNC_Elevator",
         "name":  "エレベーター演出",
         "type":  "フィルタプラグイン",
-        "summary":  "乗り場・かごの内側・かご正面の3場面でエレベーターの昇降と扉の開閉を演出",
+        "summary":  "乗り場・かご内・正面の3場面で昇降と扉の開閉を演出",
         "description":  "https://raw.githubusercontent.com/vramwiz/SYNC_Elevator/refs/heads/main/README.md",
         "author":  "VRAMの魔術師",
         "repoURL":  "https://github.com/vramwiz/SYNC_Elevator/",
